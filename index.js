@@ -1,15 +1,16 @@
 'use strict';
 
-var fs = require('fs');
-var path = require('path');
-var util = require('util');
+const fs = require('fs');
+const path = require('path');
+const util = require('util');
 
-var maybe = require('call-me-maybe');
+const maybe = require('call-me-maybe');
 
 var hljs = require('highlightjs/highlight.pack.js');
 var hlpath = require.resolve('highlightjs/highlight.pack.js').replace('highlight.pack.js', '');
 
-var emoji = require('markdown-it-emoji');
+const emoji = require('markdown-it-emoji');
+const attrs = require('markdown-it-attrs');
 var md = require('markdown-it')({
     linkify: true, html: true,
     highlight: function (str, lang) {
@@ -26,16 +27,27 @@ var md = require('markdown-it')({
     }
 }).use(require('markdown-it-lazy-headers'));
 md.use(emoji);
-var yaml = require('js-yaml');
-var ejs = require('ejs');
-var uglify = require('uglify-js');
-var cheerio = require('cheerio');
-var sanitizeHtml = require('sanitize-html');
+const yaml = require('js-yaml');
+const ejs = require('ejs');
+const uglify = require('uglify-js');
+const cheerio = require('cheerio');
+const sanitizeHtml = require('sanitize-html');
 
-var globalOptions = {};
+let globalOptions = {};
+
+function safeReadFileSync(filename,encoding) {
+    try {
+        return fs.readFileSync(filename,encoding);
+    }
+    catch (ex) {
+        console.error(`shins: included file ${filename} not found`);
+        if (globalOptions.cli) process.exit(1);
+    }
+    return '';
+}
 
 function javascript_include_tag(include) {
-    var includeStr = fs.readFileSync(path.join(__dirname, '/source/javascripts/' + include + '.inc'), 'utf8');
+    var includeStr = safeReadFileSync(path.join(__dirname, '/source/javascripts/' + include + '.inc'), 'utf8');
     if (globalOptions.minify) {
         var scripts = [];
         var includes = includeStr.split('\r').join().split('\n');
@@ -58,14 +70,14 @@ function javascript_include_tag(include) {
         }
         else {
             fs.writeFileSync(path.join(__dirname, '/pub/js/shins.js'), bundle.code, 'utf8');
-            includeStr = fs.readFileSync(path.join(__dirname, '/source/javascripts/' + include + '.bundle.inc'), 'utf8');
+            includeStr = safeReadFileSync(path.join(__dirname, '/source/javascripts/' + include + '.bundle.inc'), 'utf8');
         }
     }
     return includeStr;
 }
 
 function partial(include) {
-    var includeStr = fs.readFileSync(path.join(__dirname, '/source/includes/_' + include + '.md'), 'utf8');
+    var includeStr = safeReadFileSync(path.join(__dirname, '/source/includes/_' + include + '.md'), 'utf8');
     return postProcess(md.render(clean(includeStr)));
 }
 
@@ -75,7 +87,7 @@ function replaceAll(target, find, replace) {
 
 function stylesheet_link_tag(stylesheet, media) {
     var override = stylesheet;
-    if ((stylesheet != 'print') && (stylesheet != 'screen')) {
+    if ((stylesheet !== 'print') && (stylesheet !== 'screen')) {
         override = 'theme';
     }
     if (globalOptions.inline) {
@@ -83,12 +95,18 @@ function stylesheet_link_tag(stylesheet, media) {
         if (!fs.existsSync(stylePath)) {
             stylePath = path.join(hlpath, '/styles/' + stylesheet + '.css');
         }
-        var styleContent = fs.readFileSync(stylePath, "utf8");
-        styleContent = replaceAll(styleContent, "../../source", "source"); //fix font paths
+        var styleContent = safeReadFileSync(stylePath, "utf8");
+        styleContent = replaceAll(styleContent, '../../source/fonts/', globalOptions.fonturl||'https://raw.githubusercontent.com/Mermade/shins/master/source/fonts/');
+        styleContent = replaceAll(styleContent, '../../source/', 'source/');
         if (globalOptions.customCss) {
-            var overrideFilename = path.join(__dirname, '/pub/css/' + override + '_overrides.css');
+            let overrideFilename = path.join(__dirname, '/pub/css/' + override + '_overrides.css');
             if (fs.existsSync(overrideFilename)) {
-                styleContent += '\n' + fs.readFileSync(overrideFilename, 'utf8');
+                styleContent += '\n' + safeReadFileSync(overrideFilename, 'utf8');
+            }
+        }
+        if (globalOptions.css) {
+            if (fs.existsSync(globalOptions.css)) {
+                styleContent += '\n' + safeReadFileSync(globalOptions.css, 'utf8');
             }
         }
         return '<style media="'+media+'">'+styleContent+'</style>';
@@ -98,12 +116,15 @@ function stylesheet_link_tag(stylesheet, media) {
             var target = path.join(__dirname, '/pub/css/' + stylesheet + '.css');
             if (!fs.existsSync(target)) {
                 var source = path.join(hlpath, '/styles/' + stylesheet + '.css');
-                fs.writeFileSync(target, fs.readFileSync(source));
+                fs.writeFileSync(target, safeReadFileSync(source));
             }
         }
         var include = '<link rel="stylesheet" media="' + media + '" href="pub/css/' + stylesheet + '.css">';
         if (globalOptions.customCss) {
             include += '\n    <link rel="stylesheet" media="' + media + '" href="pub/css/' + override + '_overrides.css">';
+        }
+        if (globalOptions.css) {
+            include += '\n    <link rel="stylesheet" media="' + media + '" href="' + globalOptions.css + '">';
         }
         return include;
     }
@@ -135,7 +156,7 @@ function preProcess(content,options) {
         }
         if (filename) {
             if (options.source) filename = path.resolve(path.dirname(options.source),filename);
-            let s = fs.readFileSync(filename,'utf8');
+            let s = safeReadFileSync(filename,'utf8');
             let include = s.split('\r').join('').split('\n');
             lines.splice(l,1,...include);
         }
@@ -147,7 +168,7 @@ function preProcess(content,options) {
 function postProcess(content) {
     // adds id a la GitHub autolinks to automatically-generated headers
     content = content.replace(/\<(h[123456])\>(.*)\<\/h[123456]\>/g, function (match, group1, group2) {
-        return '<' + group1 + ' id="' + group2.toLowerCase().split(' ').join('-').split('/').join('-').split('.').join('-').split('(').join('-').split(')').join('-').split('[').join('-').split(']').join('-').split('?').join('-').split('&').join('-').split(';').join('-').split('{').join('-').split('}').join('-').split('=').join('-') + '">' + group2 + '</' + group1 + '>';
+        return '<' + group1 + ' id="' + group2.toLowerCase().split(' ').join('-').split('/').join('-').split('.').join('-').split('(').join('-').split(')').join('-').split('[').join('-').split(']').join('-').split('?').join('-').split('&').join('-').split(';').join('-').split('{').join('-').split('}').join('-').split('=').join('-').split("'").join('-') + '">' + group2 + '</' + group1 + '>';
     });
     return content;
 }
@@ -186,6 +207,8 @@ function clean(s) {
 }
 
 function render(inputStr, options, callback) {
+
+    if (options.attr) md.use(attrs);
 
     if (typeof callback === 'undefined') { // for pre-v1.4.0 compatibility
         callback = options;
@@ -318,10 +341,23 @@ function render(inputStr, options, callback) {
         locals.image_tag = function (image, altText, className) {
             var imageSource = "source/images/" + image;
             if (globalOptions.inline) {
-                var imgContent = fs.readFileSync(path.join(__dirname, imageSource));
-                imageSource = "data:image/png;base64,"+new Buffer(imgContent).toString('base64');
+                var imgContent = safeReadFileSync(path.join(__dirname, imageSource));
+                imageSource = "data:image/png;base64," + Buffer.from(imgContent).toString('base64');
             }
             return '<img src="'+imageSource+'" class="' + className + '" alt="' + altText + '">';
+        };
+        locals.logo_image_tag = function () {
+            if (!globalOptions.logo) return locals.image_tag('logo.png', 'Logo', 'logo');
+            var imageSource = path.resolve(process.cwd(), globalOptions.logo);
+            var imgContent = safeReadFileSync(imageSource);
+            if (globalOptions.inline) {
+                imageSource = "data:image/png;base64," + Buffer.from(imgContent).toString('base64');
+            } else {
+                var logoPath = "source/images/custom_logo" + path.extname(imageSource);
+                fs.writeFileSync(path.join(__dirname, logoPath), imgContent);
+                imageSource = logoPath;
+            }
+            return '<img src="' + imageSource + '" class="logo" alt="Logo">';
         };
         locals.stylesheet_link_tag = stylesheet_link_tag;
         locals.javascript_include_tag = javascript_include_tag;
